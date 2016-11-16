@@ -371,11 +371,15 @@ void bdrv_invalidate_cache_all(Error **errp);
 
 /* Ensure contents are flushed to disk.  */
 int bdrv_flush(BlockDriverState *bs);
+int mig_bdrv_flush(BlockDriverState *bs);
 int coroutine_fn bdrv_co_flush(BlockDriverState *bs);
+int coroutine_fn mig_bdrv_co_flush(BlockDriverState *bs);
 int bdrv_flush_all(void);
+int mig_bdrv_flush_all(void);
 void bdrv_close_all(void);
 void bdrv_drain(BlockDriverState *bs);
 void bdrv_drain_all(void);
+void mig_bdrv_drain_all(void);
 
 int bdrv_discard(BlockDriverState *bs, int64_t sector_num, int nb_sectors);
 int bdrv_co_discard(BlockDriverState *bs, int64_t sector_num, int nb_sectors);

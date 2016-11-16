@@ -713,6 +713,10 @@ void cpu_synchronize_all_post_init(void)
     }
 }
 
+//#define PERFORMANCE_TEST
+#ifdef PERFORMANCE_TEST
+extern int64_t perf_times[];
+#endif
 static int do_vm_stop(RunState state)
 {
     int ret = 0;
@@ -725,9 +729,19 @@ static int do_vm_stop(RunState state)
         qapi_event_send_stop(&error_abort);
     }
 
+#ifdef PERFORMANCE_TEST
+    perf_times[2]=qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+#endif
     bdrv_drain_all();
+
+#ifdef PERFORMANCE_TEST
+    perf_times[3]=qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+#endif
     ret = bdrv_flush_all();
 
+#ifdef PERFORMANCE_TEST
+    perf_times[4]=qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+#endif
     return ret;
 }
 
@@ -1390,6 +1404,8 @@ void cpu_stop_current(void)
         qemu_cond_broadcast(&qemu_pause_cond);
     }
 }
+
+
 
 int vm_stop(RunState state)
 {
