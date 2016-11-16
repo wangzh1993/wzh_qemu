@@ -33,12 +33,13 @@
 #include "qom/cpu.h"
 #include "exec/memory.h"
 #include "exec/address-spaces.h"
+#include <math.h>
 
 #define MAX_THROTTLE  (32 << 20)      /* Migration transfer speed throttling */
 
 /* Amount of time to allocate to each "chunk" of bandwidth-throttled
  * data. */
-#define BUFFER_DELAY     100
+#define BUFFER_DELAY     300
 #define XFER_LIMIT_RATIO (1000 / BUFFER_DELAY)
 
 /* Default compression thread count */
@@ -1511,6 +1512,12 @@ fail:
     return -1;
 }
 
+//#define PERFORMANCE_TEST
+//#define PERFORMANCE_TEST_DEBUG
+#ifdef  PERFORMANCE_TEST
+int64_t perf_times[10];
+#endif
+
 /**
  * migration_completion: Used by migration_thread when there's not much left.
  *   The caller 'breaks' the loop when this returns.
@@ -1529,15 +1536,30 @@ static void migration_completion(MigrationState *s, int current_active_state,
     if (s->state == MIGRATION_STATUS_ACTIVE) {
         qemu_mutex_lock_iothread();
         *start_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+#ifdef PERFORMANCE_TEST
+        perf_times[0]=*start_time;
+#endif
         qemu_system_wakeup_request(QEMU_WAKEUP_REASON_OTHER);
         *old_vm_running = runstate_is_running();
         ret = global_state_store();
 
         if (!ret) {
+
+#ifdef PERFORMANCE_TEST
+            perf_times[1]=qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+#endif
             ret = vm_stop_force_state(RUN_STATE_FINISH_MIGRATE);
             if (ret >= 0) {
                 qemu_file_set_rate_limit(s->file, INT64_MAX);
+
+#ifdef PERFORMANCE_TEST
+                perf_times[5]=qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+#endif
                 qemu_savevm_state_complete_precopy(s->file, false);
+
+#ifdef PERFORMANCE_TEST
+                perf_times[6]=qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+#endif
             }
         }
         qemu_mutex_unlock_iothread();
@@ -1581,15 +1603,390 @@ fail:
     migrate_set_state(s, current_active_state, MIGRATION_STATUS_FAILED);
 }
 
+
+#define COMPUTE_INTERVAL 100
+#define NOBENEFIT_TEST_FREQ 5
+#define BANDWIDTH_TEST_FREQ 4
+#define BANDWIDTH_RATIO 0.6
+#define BDRV_RATIO 6 //must be divisible by 3
+#define MAX_COARSELEVEL_ITER_TIMES 100
+#define MAX_BDRVFLUSH_ITER_TIMES 5
+#define DIRTY_RANGE_RATIO 0.065
+static double prevBandwidth[3];
+static int waitStage = 1;
+static int iterCounter = 0;
+static int iterWaitCounter = 0;
+static const uint64_t minDowntime = 10000000;/*unit is ns*/
+static uint64_t curDowntime;
+static double curMaxSize;
+static double coarseLevel = 1;
+static const int maxDepthLevel = 15;
+static int curDepthLevel = 0;
+static int64_t prev_bdrv_times[5];
+extern bool ram_bulk_stage;
+
+static void setExpectedBdrvTimes(int64_t bt)
+{
+    prev_bdrv_times[4] = prev_bdrv_times[3];
+    prev_bdrv_times[3] = prev_bdrv_times[2];
+    prev_bdrv_times[2] = prev_bdrv_times[1];
+    prev_bdrv_times[1] = prev_bdrv_times[0];
+    prev_bdrv_times[0] = bt;
+}
+
+static int64_t getExpectedBdrvTimes(void)
+{
+    int64_t ret = 0;
+
+    if(prev_bdrv_times[4] != 0)
+    {
+        ret = (prev_bdrv_times[0]*3 + prev_bdrv_times[1]*3 + prev_bdrv_times[2]*2 + prev_bdrv_times[3] + prev_bdrv_times[4])/10;
+    }
+    else if(prev_bdrv_times[3] != 0)
+    {
+        ret = (prev_bdrv_times[0]*4 + prev_bdrv_times[1]*3 + prev_bdrv_times[2]*2 + prev_bdrv_times[3])/10;
+    }
+    else if(prev_bdrv_times[2] != 0)
+    {
+        ret = (prev_bdrv_times[0]*4 + prev_bdrv_times[1]*3 + prev_bdrv_times[2]*3)/10;
+    }
+    else if(prev_bdrv_times[1] != 0)
+    {
+        ret = (prev_bdrv_times[0]*6 + prev_bdrv_times[1]*4)/10;
+    }
+    else if(prev_bdrv_times[0] != 0)
+    {
+        ret = prev_bdrv_times[0];
+    }
+ 
+    return ret;
+}
+
+static void setExpectedBandwidth(uint64_t bdrvStartTime,uint64_t bdrvEndTime)
+{
+    static uint64_t lastSentBytes = 0;
+    static uint64_t lastSentTime = 0;
+    static uint64_t bdrvTime = 0;
+    uint64_t curBytes = 0;
+    uint64_t curTime = 0;
+    double bw = 0.0;
+
+    MigrationState *s = migrate_get_current();
+    curBytes = qemu_ftell(s->file);
+    curTime = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+
+    if(lastSentTime != 0)
+    {
+        if(((curTime - lastSentTime - bdrvTime - (bdrvEndTime - bdrvStartTime)) > (COMPUTE_INTERVAL*BANDWIDTH_TEST_FREQ)) && (curBytes > lastSentBytes))
+        {
+            bw = (curBytes - lastSentBytes);
+            bw = bw / (curTime - lastSentTime - (bdrvEndTime - bdrvStartTime) - bdrvTime);
+ 
+            prevBandwidth[2] = prevBandwidth[1];
+            prevBandwidth[1] = prevBandwidth[0];
+            prevBandwidth[0] = bw;
+
+            lastSentBytes = curBytes;
+            lastSentTime = curTime;
+            bdrvTime = 0;
+        }
+        else
+        {
+            bdrvTime += (bdrvEndTime - bdrvStartTime);
+        }
+    }
+    else
+    {
+        lastSentBytes = curBytes;
+        lastSentTime = curTime;
+        bdrvTime = 0;
+    }
+}
+
+static double getExpectedBandwidth(void)
+{
+    double ret = 0;
+
+
+    if(fabs(prevBandwidth[2]) >= DBL_EPSILON)
+    {
+        ret = (prevBandwidth[0]*5 + prevBandwidth[1]*3 + prevBandwidth[2]*2)/10;
+    }
+    else if(fabs(prevBandwidth[1]) >= DBL_EPSILON)
+    {
+        ret = (prevBandwidth[0]*6 + prevBandwidth[1]*4)/10;
+    }
+    else if(fabs(prevBandwidth[0]) >= DBL_EPSILON)
+    {
+        ret = prevBandwidth[0];
+    }
+
+    return ret;
+}
+
+static void setExpectedDirtyBytesRate(void)
+{
+    static uint64_t lastTime = 0;
+    static uint64_t dirtyBytes = 0;
+    uint64_t curTime = 0;
+
+    MigrationState *s = migrate_get_current();
+    curTime = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+
+    if(lastTime != 0 )
+    {
+       if(curTime - lastTime > COMPUTE_INTERVAL)
+        {
+            double dbr = s->dwt_state.new_dirty_bytes + dirtyBytes; 
+            dbr = dbr / (curTime - lastTime);
+       
+            s->dwt_state.dirty_bytes_rate[2] = s->dwt_state.dirty_bytes_rate[1];
+            s->dwt_state.dirty_bytes_rate[1] = s->dwt_state.dirty_bytes_rate[0];
+            s->dwt_state.dirty_bytes_rate[0] = dbr;
+            
+            lastTime = curTime;
+            dirtyBytes = 0;
+        }
+        else
+        {
+            dirtyBytes += s->dwt_state.new_dirty_bytes;
+        }
+    }
+    else
+    {
+        lastTime = curTime;
+        dirtyBytes = 0;
+    }
+}
+
+static double getExpectedDirtyRate(void)
+{
+    double ret = 0.0;
+    MigrationState *s = migrate_get_current();
+
+    if(fabs(s->dwt_state.dirty_bytes_rate[2]) >= DBL_EPSILON)
+    {
+        ret = (s->dwt_state.dirty_bytes_rate[0]*5 + s->dwt_state.dirty_bytes_rate[1]*3 + s->dwt_state.dirty_bytes_rate[2]*2)/10;
+    }
+    else if(fabs(s->dwt_state.dirty_bytes_rate[1]) >= DBL_EPSILON)
+    {
+        ret = (s->dwt_state.dirty_bytes_rate[0]*6 + s->dwt_state.dirty_bytes_rate[1]*4)/10;
+    }
+    else if(fabs(s->dwt_state.dirty_bytes_rate[0]) >= DBL_EPSILON)
+    {
+        ret = s->dwt_state.dirty_bytes_rate[0];
+    }
+       
+    return ret;
+}
+
+static void adjustCurDowntime(void)
+{
+    uint64_t incDowntime = (migrate_max_downtime() - minDowntime) / maxDepthLevel;
+
+    iterWaitCounter++;
+
+    if(iterWaitCounter >= (curDowntime/1000000))
+    {
+        if(curDowntime < migrate_max_downtime() - incDowntime)
+        {
+           curDowntime += incDowntime;
+           curDepthLevel++;
+        }
+
+        iterWaitCounter = 0;
+    }
+}
+
+static void adjustCoarseLevel(void)
+{
+    static int lastIterCounter = 0;
+    if(iterCounter-lastIterCounter > MAX_COARSELEVEL_ITER_TIMES)
+    {
+        coarseLevel = coarseLevel + 1.0;
+        lastIterCounter = iterCounter;
+    }
+}
+
+static void adjustMaxwait(void)
+{
+    static int bdrvIterCounter = 0;
+    MigrationState *s = migrate_get_current();
+    
+    if(false == ram_bulk_stage)
+    {
+        double remainpart = (s->dwt_state.remain_dirty_bytes + s->dwt_state.new_dirty_bytes) - (coarseLevel * (migrate_max_downtime()/1000000)) * getExpectedBandwidth();
+        double benefit = getExpectedBandwidth() - getExpectedDirtyRate();
+
+        if(remainpart >= DBL_EPSILON)/*coarse-granularity*/
+        {
+                s->dwt_state.maxwait = ( benefit >= DBL_EPSILON)? (remainpart / benefit) : (COMPUTE_INTERVAL/NOBENEFIT_TEST_FREQ);
+                s->dwt_state.maxwait = ((0 != s->dwt_state.maxwait)?s->dwt_state.maxwait:1);
+                curDowntime = migrate_max_downtime();
+                curDepthLevel = maxDepthLevel;
+                waitStage = 1;   
+        }
+        else /*fine-granularity*/
+        {
+            if(1 == waitStage)
+            {
+                curDowntime = minDowntime;
+                curDepthLevel = 0;
+                iterWaitCounter = 0;
+                waitStage = 2;
+                bdrvIterCounter = 0;
+            }
+            else if (2 == waitStage)
+            {
+                if(bdrvIterCounter >= MAX_BDRVFLUSH_ITER_TIMES)
+                {
+                    waitStage = 3;
+                }
+                else
+                {
+                    bdrvIterCounter++;
+                }
+            }
+     
+            adjustCurDowntime();
+
+            remainpart = (s->dwt_state.remain_dirty_bytes + s->dwt_state.new_dirty_bytes) - ((curDowntime/1000000) * getExpectedBandwidth());
+            if(remainpart>=DBL_EPSILON)
+            {
+                s->dwt_state.maxwait = (benefit)>=DBL_EPSILON ? (remainpart / benefit) : (COMPUTE_INTERVAL/NOBENEFIT_TEST_FREQ);
+                s->dwt_state.maxwait = ((0 != s->dwt_state.maxwait)?s->dwt_state.maxwait:1);
+            }
+            else
+            {
+                s->dwt_state.maxwait = (benefit>=DBL_EPSILON)?((s->dwt_state.remain_dirty_bytes + s->dwt_state.new_dirty_bytes)/(benefit*2)):(COMPUTE_INTERVAL/NOBENEFIT_TEST_FREQ);
+                s->dwt_state.maxwait = ((0 != s->dwt_state.maxwait)?s->dwt_state.maxwait:1);
+            }
+        }
+    }
+    else
+    {
+        curDowntime = migrate_max_downtime();
+        curDepthLevel = maxDepthLevel;
+        s->dwt_state.maxwait = INT_MAX; 
+    }
+
+    adjustCoarseLevel();
+
+}
+
+static inline double getExpectedDirtyBytes(void)
+{
+   double ret = getExpectedBandwidth();
+
+   ret = ret * (curDowntime/1000000) * BANDWIDTH_RATIO;
+
+   return ret;
+}
+
+static inline bool needIterate(uint64_t pendingSize)
+{
+    bool ret = true;
+    
+    int64_t tmpBdrvTime = getExpectedBdrvTimes();
+    double stdBdrvTime = (curDowntime/1000000);
+    double levelRatio = maxDepthLevel/(curDepthLevel+1) * DIRTY_RANGE_RATIO;
+
+    stdBdrvTime = (levelRatio + 1) * (levelRatio + 1) / BDRV_RATIO * stdBdrvTime;
+
+    if (3 == waitStage && (tmpBdrvTime <= stdBdrvTime))
+    {
+        double bdrvRatio = 1.0;
+
+        if(tmpBdrvTime > 0)
+        {
+            bdrvRatio = (stdBdrvTime/tmpBdrvTime);
+            if(bdrvRatio > (levelRatio + 1))
+            {
+                bdrvRatio = levelRatio + 1;
+            }
+        }
+
+        curMaxSize = bdrvRatio * (levelRatio + 1) * getExpectedDirtyBytes();
+        
+        if(pendingSize < curMaxSize)
+        {
+            ret = false;
+        }
+    }
+
+    return ret;
+}
+
+#ifdef PERFORMANCE_TEST
+/*just for performance test, not thread-safe*/
+#include <sys/file.h>
+#include <unistd.h>
+#define MIG_FILENAME "/var/log/migration.log"
+static int perfLogfd;
+
+static void migLog(const char *fmt, ...)
+{
+    va_list ap;
+
+    perfLogfd = open(MIG_FILENAME,O_APPEND|O_CREAT|O_RDWR,S_IRUSR|S_IWUSR);
+    if(perfLogfd<=0)
+    {
+       perror(MIG_FILENAME);
+       return;
+    }
+
+    lseek(perfLogfd,0,SEEK_END);
+
+    va_start(ap, fmt);
+    vdprintf(perfLogfd, fmt, ap);
+    va_end(ap);
+
+    close(perfLogfd);
+    perfLogfd = 0;
+}
+#endif
+
+#ifdef PERFORMANCE_TEST_DEBUG
+#define MAXLOGBUFSIZE 16*1024*1024
+static char migLogBuf[MAXLOGBUFSIZE];
+
+static void migLogPutStr(char *str)
+{
+    int len = 0;
+    perfLogfd = open(MIG_FILENAME,O_APPEND|O_CREAT|O_RDWR,S_IRUSR|S_IWUSR);
+    if(perfLogfd<=0)
+    {
+       perror(MIG_FILENAME);
+       return;
+    }
+
+    lseek(perfLogfd,0,SEEK_END);
+
+    len = strlen(str);
+
+    if(write(perfLogfd,str,len) != len)
+    {
+        perror("write error\n");
+    }
+
+    close(perfLogfd);
+    perfLogfd = 0;
+}
+#endif
+
+/*just for performance test, not thread-safe*/
 /*
  * Master migration thread on the source VM.
  * It drives the migration and pumps the data down the outgoing channel.
  */
 static void *migration_thread(void *opaque)
 {
+    static uint64_t bdrv_time = 0;
     MigrationState *s = opaque;
     /* Used by the bandwidth calcs, updated later */
     int64_t initial_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+    int64_t bdrv_start_time = 0;
+    int64_t bdrv_end_time = 0;
     int64_t setup_start = qemu_clock_get_ms(QEMU_CLOCK_HOST);
     int64_t initial_bytes = 0;
     int64_t max_size = 0;
@@ -1631,6 +2028,7 @@ static void *migration_thread(void *opaque)
            s->state == MIGRATION_STATUS_POSTCOPY_ACTIVE) {
         int64_t current_time;
         uint64_t pending_size;
+        bool again = true;
 
         if (!qemu_file_rate_limit(s->file)) {
             uint64_t pend_post, pend_nonpost;
@@ -1640,7 +2038,25 @@ static void *migration_thread(void *opaque)
             pending_size = pend_nonpost + pend_post;
             trace_migrate_pending(pending_size, max_size,
                                   pend_post, pend_nonpost);
-            if (pending_size && pending_size >= max_size) {
+            if(s->state == MIGRATION_STATUS_ACTIVE)
+            {
+                iterCounter++;
+                setExpectedBandwidth(bdrv_start_time,bdrv_end_time);
+                setExpectedDirtyBytesRate();
+                adjustMaxwait();
+                again = needIterate(pending_size);
+
+#ifdef PERFORMANCE_TEST_DEBUG
+                double curbw = getExpectedBandwidth();
+                if(strnlen(migLogBuf,MAXLOGBUFSIZE) < MAXLOGBUFSIZE-2048)
+                {
+                    sprintf(migLogBuf+strnlen(migLogBuf,MAXLOGBUFSIZE)," iter %d, rambulk is %d, waitStage is %d, pending is %lu,bandwidth is %lf,curMaxSize is %lf,maxwait is %lu,remain is %lu,new_dirty is %lu,dirty rate is %lf,coarseLevel is %lf,bdrv_time is %ld\n\n",iterCounter,ram_bulk_stage,waitStage,pending_size,curbw,curMaxSize,s->dwt_state.maxwait,s->dwt_state.remain_dirty_bytes,s->dwt_state.new_dirty_bytes,getExpectedDirtyRate(),coarseLevel,bdrv_end_time - bdrv_start_time);
+                }
+
+#endif
+            }
+            if ((s->state == MIGRATION_STATUS_ACTIVE && again) || (s->state == MIGRATION_STATUS_POSTCOPY_ACTIVE && pending_size && pending_size >= max_size)){
+            
                 /* Still a significant amount to transfer */
 
                 if (migrate_postcopy_ram() &&
@@ -1657,6 +2073,20 @@ static void *migration_thread(void *opaque)
                 }
                 /* Just another iteration step */
                 qemu_savevm_state_iterate(s->file, entered_postcopy);
+                if(s->state == MIGRATION_STATUS_ACTIVE && (2==waitStage || 3 == waitStage))
+                {
+                    /*flush buffers of block devices*/
+                    bdrv_start_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+                    mig_bdrv_drain_all();
+                    mig_bdrv_flush_all();
+                    bdrv_end_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+                    bdrv_time += bdrv_end_time - bdrv_start_time;
+                    setExpectedBdrvTimes(bdrv_end_time - bdrv_start_time);
+                }
+                else
+                {
+                    bdrv_start_time = bdrv_end_time = 0;
+                }
             } else {
                 trace_migration_thread_low_pending(pending_size);
                 migration_completion(s, current_active_state,
@@ -1670,10 +2100,13 @@ static void *migration_thread(void *opaque)
             trace_migration_thread_file_err();
             break;
         }
+
         current_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
         if (current_time >= initial_time + BUFFER_DELAY) {
             uint64_t transferred_bytes = qemu_ftell(s->file) - initial_bytes;
             uint64_t time_spent = current_time - initial_time;
+            time_spent = time_spent -  bdrv_time;
+            bdrv_time = 0;
             double bandwidth = (double)transferred_bytes / time_spent;
             max_size = bandwidth * migrate_max_downtime() / 1000000;
 
@@ -1723,6 +2156,27 @@ static void *migration_thread(void *opaque)
     }
     qemu_bh_schedule(s->cleanup_bh);
     qemu_mutex_unlock_iothread();
+
+#ifdef PERFORMANCE_TEST_DEBUG
+    migLogPutStr(migLogBuf);
+#endif
+#ifdef PERFORMANCE_TEST
+    migLog("=========opt=============\n");
+    int tmpIndex=0;
+    for(tmpIndex=0;tmpIndex<10;tmpIndex++)
+    {
+        if(0 != perf_times[tmpIndex])
+        {
+            migLog(" perf_times[%d] is %ld\n",tmpIndex,perf_times[tmpIndex]);
+        }
+    }
+    migLog(" complete remain bytes is %lu\n new dirty bytes is %lu\n total dirty bytes is %lu\n",s->dwt_state.remain_dirty_bytes,s->dwt_state.new_dirty_bytes,s->dwt_state.remain_dirty_bytes + s->dwt_state.new_dirty_bytes);
+    migLog(" total time is %ld\n down time is %ld\n dirty page rate is %ld\n",s->total_time,s->downtime,s->dirty_pages_rate);
+    migLog(" xbzrle is enabled(%d)\n",s->enabled_capabilities[MIGRATION_CAPABILITY_XBZRLE]);
+    migLog(" compression is enabled(%d)\n",s->enabled_capabilities[MIGRATION_CAPABILITY_COMPRESS]);
+    migLog("\n\n");
+
+#endif
 
     rcu_unregister_thread();
     return NULL;

@@ -223,7 +223,7 @@ static ram_addr_t last_offset;
 static QemuMutex migration_bitmap_mutex;
 static uint64_t migration_dirty_pages;
 static uint32_t last_version;
-static bool ram_bulk_stage;
+bool ram_bulk_stage;
 
 /* used by the search for pages to send */
 struct PageSearchStatus {
@@ -1877,11 +1877,14 @@ static int ram_save_setup(QEMUFile *f, void *opaque)
 {
     RAMBlock *block;
     int64_t ram_bitmap_pages; /* Size of bitmap in pages, including gaps */
-
+    MigrationState *s = migrate_get_current();
+ 
     dirty_rate_high_cnt = 0;
     bitmap_sync_count = 0;
     migration_bitmap_sync_init();
     qemu_mutex_init(&migration_bitmap_mutex);
+
+    s->dwt_state.maxwait = MAX_WAIT;
 
     if (migrate_use_xbzrle()) {
         XBZRLE_cache_lock();
@@ -1996,7 +1999,9 @@ static int ram_save_iterate(QEMUFile *f, void *opaque)
         */
         if ((i & 63) == 0) {
             uint64_t t1 = (qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - t0) / 1000000;
-            if (t1 > MAX_WAIT) {
+            MigrationState *s = migrate_get_current();
+
+            if (t1 > s->dwt_state.maxwait) {
                 DPRINTF("big wait: %" PRIu64 " milliseconds, %d iterations\n",
                         t1, i);
                 break;
@@ -2024,13 +2029,24 @@ static int ram_save_iterate(QEMUFile *f, void *opaque)
     return pages_sent;
 }
 
+//#define PERFORMANCE_TEST
+
 /* Called with iothread lock */
 static int ram_save_complete(QEMUFile *f, void *opaque)
 {
     rcu_read_lock();
 
     if (!migration_in_postcopy(migrate_get_current())) {
+#ifdef PERFORMANCE_TEST 
+        MigrationState *s = migrate_get_current();
+        s->dwt_state.remain_dirty_bytes = ram_save_remaining() * TARGET_PAGE_SIZE;
+#endif
+    
         migration_bitmap_sync();
+
+#ifdef PERFORMANCE_TEST
+        s->dwt_state.new_dirty_bytes = ram_save_remaining() * TARGET_PAGE_SIZE - s->dwt_state.remain_dirty_bytes;
+#endif
     }
 
     ram_control_before_iterate(f, RAM_CONTROL_FINISH);
@@ -2063,17 +2079,20 @@ static void ram_save_pending(QEMUFile *f, void *opaque, uint64_t max_size,
                              uint64_t *postcopiable_pending)
 {
     uint64_t remaining_size;
+    MigrationState *s = migrate_get_current();
 
     remaining_size = ram_save_remaining() * TARGET_PAGE_SIZE;
+    s->dwt_state.remain_dirty_bytes = remaining_size;
 
     if (!migration_in_postcopy(migrate_get_current()) &&
-        remaining_size < max_size) {
+        (false == ram_bulk_stage || remaining_size < max_size)) {
         qemu_mutex_lock_iothread();
         rcu_read_lock();
         migration_bitmap_sync();
         rcu_read_unlock();
         qemu_mutex_unlock_iothread();
         remaining_size = ram_save_remaining() * TARGET_PAGE_SIZE;
+        s->dwt_state.new_dirty_bytes = remaining_size - s->dwt_state.remain_dirty_bytes;
     }
 
     /* We can do postcopy, and all the data is postcopiable */

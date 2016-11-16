@@ -125,6 +125,13 @@ struct MigrationSrcPageRequest {
     QSIMPLEQ_ENTRY(MigrationSrcPageRequest) next_req;
 };
 
+struct DynamicWaitTime{
+    double dirty_bytes_rate[3];
+    uint64_t remain_dirty_bytes;
+    uint64_t new_dirty_bytes;
+    uint64_t maxwait;
+};
+
 struct MigrationState
 {
     int64_t bandwidth_limit;
@@ -167,6 +174,8 @@ struct MigrationState
     QSIMPLEQ_HEAD(src_page_requests, MigrationSrcPageRequest) src_page_requests;
     /* The RAMBlock used in the last src_page_request */
     RAMBlock *last_req_rb;
+
+    struct DynamicWaitTime dwt_state;
 };
 
 void process_incoming_migration(QEMUFile *f);
