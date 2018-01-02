@@ -42,6 +42,8 @@
 #define BUFFER_DELAY     300
 #define XFER_LIMIT_RATIO (1000 / BUFFER_DELAY)
 
+/* Default max depth level value */
+#define DEFAULT_MIGRATE_MAX_DEPTH_LEVEL 15
 /* Default compression thread count */
 #define DEFAULT_MIGRATE_COMPRESS_THREAD_COUNT 8
 /* Default decompression thread count, usually decompression is at
@@ -79,6 +81,7 @@ MigrationState *migrate_get_current(void)
     static MigrationState current_migration = {
         .state = MIGRATION_STATUS_NONE,
         .bandwidth_limit = MAX_THROTTLE,
+        .max_depth_level = DEFAULT_MIGRATE_MAX_DEPTH_LEVEL,
         .xbzrle_cache_size = DEFAULT_MIGRATE_CACHE_SIZE,
         .mbps = -1,
         .parameters[MIGRATION_PARAMETER_COMPRESS_LEVEL] =
@@ -1095,6 +1098,15 @@ void qmp_migrate_set_speed(int64_t value, Error **errp)
     }
 }
 
+void qmp_migrate_set_max_depth_level(int64_t value, Error **errp)
+{
+    if (0 < value && value > 120) {
+        MigrationState *s;
+        s = migrate_get_current();
+        s->max_depth_level = value;
+    }
+}
+
 void qmp_migrate_set_downtime(double value, Error **errp)
 {
     value *= 1e9;
@@ -1163,6 +1175,15 @@ int migrate_decompress_threads(void)
     s = migrate_get_current();
 
     return s->parameters[MIGRATION_PARAMETER_DECOMPRESS_THREADS];
+}
+
+static int migrate_max_depth_level(void)
+{
+    MigrationState *s;
+
+    s = migrate_get_current();
+
+    return s->max_depth_level;
 }
 
 bool migrate_use_events(void)
@@ -1620,7 +1641,6 @@ static const uint64_t minDowntime = 10000000;/*unit is ns*/
 static uint64_t curDowntime;
 static double curMaxSize;
 static double coarseLevel = 1;
-static const int maxDepthLevel = 15;
 static int curDepthLevel = 0;
 static int64_t prev_bdrv_times[5];
 extern bool ram_bulk_stage;
@@ -1782,7 +1802,7 @@ static double getExpectedDirtyRate(void)
 
 static void adjustCurDowntime(void)
 {
-    uint64_t incDowntime = (migrate_max_downtime() - minDowntime) / maxDepthLevel;
+    uint64_t incDowntime = (migrate_max_downtime() - minDowntime) / migrate_max_depth_level();
 
     iterWaitCounter++;
 
@@ -1823,7 +1843,7 @@ static void adjustMaxwait(void)
                 s->dwt_state.maxwait = ( benefit >= DBL_EPSILON)? (remainpart / benefit) : (COMPUTE_INTERVAL/NOBENEFIT_TEST_FREQ);
                 s->dwt_state.maxwait = ((0 != s->dwt_state.maxwait)?s->dwt_state.maxwait:1);
                 curDowntime = migrate_max_downtime();
-                curDepthLevel = maxDepthLevel;
+                curDepthLevel = migrate_max_depth_level();
                 waitStage = 1;   
         }
         else /*fine-granularity*/
@@ -1866,7 +1886,7 @@ static void adjustMaxwait(void)
     else
     {
         curDowntime = migrate_max_downtime();
-        curDepthLevel = maxDepthLevel;
+        curDepthLevel = migrate_max_depth_level();
         s->dwt_state.maxwait = INT_MAX; 
     }
 
@@ -1889,7 +1909,7 @@ static inline bool needIterate(uint64_t pendingSize)
     
     int64_t tmpBdrvTime = getExpectedBdrvTimes();
     double stdBdrvTime = (curDowntime/1000000);
-    double levelRatio = maxDepthLevel/(curDepthLevel+1) * DIRTY_RANGE_RATIO;
+    double levelRatio = migrate_max_depth_level() / (curDepthLevel+1) * DIRTY_RANGE_RATIO;
 
     stdBdrvTime = (levelRatio + 1) * (levelRatio + 1) / BDRV_RATIO * stdBdrvTime;
 

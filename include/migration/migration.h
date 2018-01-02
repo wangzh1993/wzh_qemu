@@ -135,6 +135,7 @@ struct DynamicWaitTime{
 struct MigrationState
 {
     int64_t bandwidth_limit;
+    int max_depth_level;
     size_t bytes_xfer;
     size_t xfer_limit;
     QemuThread thread;

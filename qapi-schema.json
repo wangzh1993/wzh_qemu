@@ -1699,6 +1699,21 @@
 { 'command': 'migrate_set_speed', 'data': {'value': 'int'} }
 
 ##
+# @migrate_set_max_depth_level
+#
+# Set maximum depth level for migration.
+#
+# @value: maximum depth level in bytes.
+#
+# Returns: nothing on success
+#
+# Notes: none.
+#
+# Since: 0.14.0
+##
+{ 'command': 'migrate_set_max_depth_level', 'data': {'value': 'int'} }
+
+##
 # @migrate-set-cache-size
 #
 # Set XBZRLE cache size

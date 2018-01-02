@@ -978,6 +978,21 @@ Set maximum speed to @var{value} (in bytes) for migrations.
 ETEXI
 
     {
+        .name       = "migrate_set_max_depth_level",
+        .args_type  = "value:o",
+        .params     = "value",
+        .help       = "set maximum depth level for migrations. "
+	"Defaults to 15",
+        .mhandler.cmd = hmp_migrate_set_max_depth_level,
+    },
+
+STEXI
+@item migrate_set_max_depth_level @var{value}
+@findex migrate_set_max_depth_level
+Set maximum depth level to @var{value} for migrations.
+ETEXI
+
+    {
         .name       = "migrate_set_downtime",
         .args_type  = "value:T",
         .params     = "value",

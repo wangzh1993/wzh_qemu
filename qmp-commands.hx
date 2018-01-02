@@ -782,6 +782,29 @@ Example:
 EQMP
 
     {
+        .name       = "migrate_set_max_depth_level",
+        .args_type  = "value:o",
+        .mhandler.cmd_new = qmp_marshal_migrate_set_max_depth_level,
+    },
+
+SQMP
+migrate_set_max_depth_level
+-----------------
+
+Set maximum depth level for migrations.
+
+Arguments:
+
+- "value": maximum depth level (json-int)
+
+Example:
+
+-> { "execute": "migrate_set_max_depth_level", "arguments": { "value": 10 } }
+<- { "return": {} }
+
+EQMP
+
+    {
         .name       = "migrate_set_downtime",
         .args_type  = "value:T",
         .mhandler.cmd_new = qmp_marshal_migrate_set_downtime,
