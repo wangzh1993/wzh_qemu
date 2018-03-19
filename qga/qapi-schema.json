@@ -691,6 +691,55 @@
   'returns': 'int' }
 
 ##
+# @GuestFileSystemStatistics:
+#
+# Information about guest file system statistics.
+#
+# @f_bsize: file system block size.
+#
+# @f_frsize: fragment size.
+#
+# @f_blocks: size of fs in f_frsize units.
+#
+# @f_bfree: free blocks.
+#
+# @f_bavail: free blocks for non-root.
+#
+# @f_files: inodes.
+#
+# @f_ffree: free inodes.
+#
+# @f_favail: free inodes for non-root.
+#
+# @f_fsid: file system id.
+#
+# @f_flag: mount flags
+#
+# @f_namemax: maximum filename length.
+#
+# Since 1.5.10(NetEase)
+##
+{ 'type': 'GuestFileSystemStatistics',
+  'data': { 'f_bsize': 'int', 'f_frsize': 'int', 'f_blocks': 'int',
+            'f_bfree': 'int', 'f_bavail': 'int', 'f_files': 'int',
+            'f_ffree': 'int', 'f_favail': 'int', 'f_fsid': 'int',
+            'f_flag': 'int', 'f_namemax': 'int'} }
+
+##
+# @guest-get-statvfs:
+#
+# Get the information about guest file system statistics by statvfs.
+#
+# Returns: @GuestFileSystemStatistics.
+#
+# Since 1.5.10(NetEase)
+##
+{ 'command': 'guest-get-statvfs',
+  'data':    { 'path': 'str' },
+  'returns': 'GuestFileSystemStatistics' }
+
+
+##
 # @GuestDiskBusType
 #
 # An enumeration of bus type of disks

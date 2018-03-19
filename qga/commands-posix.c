@@ -23,6 +23,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <inttypes.h>
+#include <sys/statvfs.h>
 #include "qga/guest-agent-core.h"
 #include "qga-qmp-commands.h"
 #include "qapi/qmp/qerror.h"
@@ -2512,6 +2513,36 @@ GList *ga_command_blacklist_init(GList *blacklist)
 #endif
 
     return blacklist;
+}
+
+GuestFileSystemStatistics *qmp_guest_get_statvfs(const char *path, Error **errp)
+{
+    int ret;
+    GuestFileSystemStatistics *fs_stat;
+    struct statvfs *buf;
+    buf = g_malloc0(sizeof(struct statvfs));
+
+
+    ret = statvfs(path, buf);
+    if (ret < 0) {
+       error_setg_errno(errp, errno, "Failed to get statvfs");
+       return NULL;
+    }
+
+    fs_stat = g_malloc0(sizeof(GuestFileSystemStatistics));
+    fs_stat->f_bsize = buf->f_bsize;
+    fs_stat->f_frsize = buf->f_frsize;
+    fs_stat->f_blocks = buf->f_blocks;
+    fs_stat->f_bfree = buf->f_bfree;
+    fs_stat->f_bavail = buf->f_bavail;
+    fs_stat->f_files = buf->f_files;
+    fs_stat->f_ffree = buf->f_ffree;
+    fs_stat->f_favail = buf->f_favail;
+    fs_stat->f_fsid = buf->f_fsid;
+    fs_stat->f_flag = buf->f_flag;
+    fs_stat->f_namemax = buf->f_namemax;
+
+    return fs_stat;
 }
 
 /* register init/cleanup routines for stateful command groups */
