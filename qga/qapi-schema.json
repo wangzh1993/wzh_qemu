@@ -719,7 +719,7 @@
 #
 # Since 1.5.10(NetEase)
 ##
-{ 'type': 'GuestFileSystemStatistics',
+{ 'struct': 'GuestFileSystemStatistics',
   'data': { 'f_bsize': 'int', 'f_frsize': 'int', 'f_blocks': 'int',
             'f_bfree': 'int', 'f_bavail': 'int', 'f_files': 'int',
             'f_ffree': 'int', 'f_favail': 'int', 'f_fsid': 'int',
