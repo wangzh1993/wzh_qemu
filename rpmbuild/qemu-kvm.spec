@@ -753,7 +753,6 @@ sh %{_sysconfdir}/sysconfig/modules/kvm.modules &> /dev/null || :
     %doc %{qemudocdir}/qmp-spec.txt
     %doc %{qemudocdir}/qmp-events.txt
     %dir %{_datadir}/%{pkgname}/
-    %doc %{_datadir}/locale/*
     %{_datadir}/%{pkgname}/keymaps/
     %{_mandir}/man1/qemu.1.gz
     %attr(4755, -, -) %{_libexecdir}/qemu-bridge-helper
